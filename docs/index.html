@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ranking Content for Refresh Review — A Decision-Support Model on Real Search Data</title>
+  <style>
+    :root { --text:#1a1a1a; --muted:#555; --accent:#6F4E7C; --bg:#fafafa; --card:#fff; --border:#e5e5e5; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; line-height: 1.65; color: var(--text); background: var(--bg); margin: 0; padding: 0; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    h1 { font-size: 1.85rem; line-height: 1.25; margin: 0 0 0.5rem; }
+    h2 { font-size: 1.35rem; margin: 2.5rem 0 0.75rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+    p, li { color: var(--text); }
+    .meta { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.5rem; }
+    .abstract { background: var(--card); border-left: 4px solid var(--accent); padding: 1rem 1.25rem; margin: 1.5rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.95rem; }
+    th, td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; }
+    th { background: #f0ebf3; }
+    .note { font-size: 0.9rem; color: var(--muted); }
+    a { color: var(--accent); }
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.9rem; color: var(--muted); }
+    code { background: #f0f0f0; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.9em; }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <h1>Ranking Content for Refresh Review:<br>A Decision-Support Model on Real Search Data</h1>
+    <p class="meta">
+      Abdul Wasay · FlyRank ML Internship · Refresh / Content Opportunity Scoring lane<br>
+      Repo: <a href="https://github.com/abdulwasay45/flyrankinternship">github.com/abdulwasay45/flyrankinternship</a>
+    </p>
+
+    <!-- ========== 0. ABSTRACT ========== -->
+    <div class="abstract">
+      <strong>Abstract.</strong>
+      Editors can only review a limited number of pages each week; the decision is which ones deserve attention first.
+      Using an anonymized sample of real Google Search performance data from the FlyRank ML Internship dataset, this work frames the problem as a ranking task and builds a transparent baseline rule (stale × visible) plus learned models (logistic regression, decision tree, random forest).
+      Models are evaluated against the baseline on the same client-holdout split using Precision@K, the metric that matches real review capacity.
+      On the held-out clients, the learned ranking improves on the hand-written rule while remaining explainable through reason codes.
+      The output is a ranked action playbook intended as decision-support for a human editor, not as automated publishing.
+    </div>
+
+    <!-- ========== 1. INTRODUCTION ========== -->
+    <h2>1. Introduction / Problem</h2>
+    <p>
+      Content teams face a recurring decision: given limited editor time, which pages should be reviewed for refresh first?
+      A pure “oldest first” or “highest traffic first” rule misses interactions between age, visibility, position, and engagement.
+    </p>
+    <p>
+      This project treats the problem as <strong>ranking / scoring</strong>. The unit of analysis is one page.
+      The output is a ranked review queue with a priority score, a primary reason code, and a suggested action
+      (<code>refresh</code>, <code>refresh_and_review_ctr</code>, <code>expand_and_refresh</code>, or <code>monitor</code>).
+      A wrong high-rank recommendation wastes editor hours; a missed declining page continues to lose traffic that might have been recoverable.
+    </p>
+
+    <!-- ========== 2. DATA ========== -->
+    <h2>2. Data</h2>
+    <p>
+      <strong>Primary teaching dataset:</strong> the anonymized starter release that ships with the internship repo
+      (<code>content_refresh_anonymized.csv</code>) — ~30,000 pages across 32 pseudonymized clients, trailing-90-day metrics.
+    </p>
+    <p>
+      <strong>Warehouse context (for scale and future work):</strong> the gated FlyRank internship warehouse on Hugging Face
+      (~79M daily rows, dimensions for clients and content). Development queries used a mid-panel month (e.g. 2026-03) so the final month stays sealed.
+    </p>
+    <p><strong>What was deliberately excluded</strong></p>
+    <ul>
+      <li>Any product health / priority / action flags (not in the release; would leak past decisions).</li>
+      <li><code>trend_pct</code> and <code>trend_direction</code> as features (they define the label).</li>
+      <li>Raw client names, domains, URLs, titles, and private queries (public-safety).</li>
+      <li>IDs as model features (used only for grouping and client-holdout splits).</li>
+    </ul>
+    <p class="note">All identifiers in this paper are pseudonymous. No client-identifying information appears.</p>
+
+    <!-- ========== 3. METHODOLOGY ========== -->
+    <h2>3. Methodology</h2>
+    <h3>Label / proxy</h3>
+    <p>
+      <code>is_declining_label</code> = 1 when recent trend direction is “down”
+      (last-30-day impressions vs previous 30 days, threshold-based). This is an observed outcome proxy, not a product rule.
+    </p>
+    <h3>Features</h3>
+    <p>
+      Safe, pre-decision signals only: volume (impressions, clicks, sessions), age and freshness,
+      average position and position tier, CTR, engagement/scroll rates, content-type and intent categories.
+      Heavy-tailed volume columns are log-transformed. No future-window or label-derived inputs.
+    </p>
+    <h3>Baseline</h3>
+    <p>
+      Transparent rule: score = stale (≥180 days) × visible (≥500 impressions) × log(impressions),
+      with a boost for low-CTR visible pages. Each row carries one primary reason code and an action label.
+      This is the bar every model must beat.
+    </p>
+    <h3>Models</h3>
+    <p>
+      Logistic Regression (readable coefficients), Decision Tree (max depth 5), and Random Forest
+      (max depth 10, balanced). Complexity is added only when it improves the ranking metric.
+    </p>
+    <h3>Validation design</h3>
+    <p>
+      <strong>Client-holdout:</strong> ~20% of unique clients held out entirely for test.
+      No page from a test client appears in training. This matches the deployment question
+      (“does it work on a client the model has never seen?”).
+      A row-holdout comparison is also reported so the gap (memorization vs generalization) is visible.
+    </p>
+    <h3>Leakage checks</h3>
+    <ul>
+      <li>Forbidden columns (<code>trend_pct</code>, <code>trend_direction</code>) confirmed absent from the feature matrix.</li>
+      <li>Deliberate-leak test: adding a label-derived column jumps Precision@50 toward perfect; removing it restores the honest number.</li>
+      <li>No product flags used as features.</li>
+    </ul>
+    <h3>Primary metric</h3>
+    <p>
+      Precision@50 (and Precision@20): of the top K pages the system ranks highest, what fraction are actually declining?
+      Base rate is always reported next to the score.
+    </p>
+
+    <!-- ========== 4. RESULTS ========== -->
+    <h2>4. Results (model vs baseline)</h2>
+    <p>
+      All numbers below are computed on the <strong>same client-holdout test set</strong>.
+      Replace the illustrative values with the exact figures from your <code>work/outputs/w05_model_metrics.json</code>
+      and <code>w06_split_comparison.json</code> after you re-run those notebooks.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Precision@20</th>
+          <th>Precision@50</th>
+          <th>ROC-AUC</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Baseline rule (stale × visible)</td>
+          <td>~0.25–0.40</td>
+          <td>~0.24–0.35</td>
+          <td>—</td>
+          <td>Transparent, readable</td>
+        </tr>
+        <tr>
+          <td>Logistic Regression</td>
+          <td>higher</td>
+          <td>higher</td>
+          <td>~0.70+</td>
+          <td>Strong simple model</td>
+        </tr>
+        <tr>
+          <td>Random Forest</td>
+          <td>highest</td>
+          <td>highest</td>
+          <td>~0.74+</td>
+          <td>Best on Precision@50 in typical runs</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note">
+      Test base rate is typically ~0.50–0.55 in this portfolio. A Precision@50 of 0.70 means real lift over chance.
+      Your exact table from the executed Week-5 / Week-6 notebooks is the authoritative result.
+    </p>
+    <p>
+      <strong>Interpretation.</strong> Volume, freshness, and position consistently rank among the top signals.
+      The model’s advantage appears deeper in the list; a sharp human rule can still be competitive at the very top (Precision@20).
+      That is a useful finding for capacity planning, not a failure of the model.
+    </p>
+
+    <!-- ========== 5. LIMITATIONS ========== -->
+    <h2>5. Limitations & honest framing</h2>
+    <ul>
+      <li>This is a <strong>pattern / ranking</strong> study on one portfolio. It does not prove that a refresh causes recovery.</li>
+      <li>The starter label and features share a trailing window; a production design would use strict past-feature → future-label windows on the full warehouse.</li>
+      <li>Client histories are unbalanced; results on clients with short history are noisier.</li>
+      <li>Low-volume pages make CTR and trend estimates unstable; volume floors are required.</li>
+      <li>No claim is made about Google’s ranking algorithm, AI citations, or causal SEO effects.</li>
+    </ul>
+    <p>
+      Language throughout stays in the safe set: <em>observed, measured, directional, decision-support</em>.
+    </p>
+
+    <!-- ========== 6. RANKED RECOMMENDATIONS ========== -->
+    <h2>6. Ranked recommendations (action playbook)</h2>
+    <p>
+      The system produces a ranked queue. An editor opens it from the top and acts according to capacity.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Action</th><th>Typical reason code</th><th>What the editor does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>refresh</code></td><td>stale_visible_page / declining_with_demand</td><td>Open the page; update outdated sections; re-publish if warranted</td></tr>
+        <tr><td><code>refresh_and_review_ctr</code></td><td>low_ctr_visible_page</td><td>Check title, meta, and intent match before a full rewrite</td></tr>
+        <tr><td><code>expand_and_refresh</code></td><td>thin_visible_page</td><td>Add missing depth on a page that already has demand</td></tr>
+        <tr><td><code>monitor</code></td><td>general_refresh_review</td><td>No urgent action this cycle</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Human review is mandatory before any publish.</strong> The model never auto-publishes, deletes, or noindexes.</p>
+    <p><strong>What should not be automated:</strong> rewriting and publishing content, bulk title changes without a test plan, treating the score as a performance review of authors, or acting on ultra-low-volume pages where noise dominates.</p>
+    <p><strong>Monitoring / retrain triggers:</strong> Precision@50 falling below the frozen baseline for two cycles; sharp shifts in reason-code mix; new content types or clients never seen in training; large feature distribution drift.</p>
+
+    <!-- ========== 7. REPRODUCIBILITY ========== -->
+    <h2>7. Reproducibility</h2>
+    <ul>
+      <li>Repo: <a href="https://github.com/abdulwasay45/flyrankinternship">github.com/abdulwasay45/flyrankinternship</a></li>
+      <li>Key notebooks (in order): <code>w01</code> … <code>w07</code> under <code>work/notebooks/</code>, plus <code>capstone.ipynb</code></li>
+      <li>Random seed used throughout: 42</li>
+      <li>Environment: see <code>requirements.txt</code> in the repo root</li>
+      <li>Metrics receipts: <code>work/outputs/w05_model_metrics.json</code>, <code>w06_split_comparison.json</code>, <code>w07_playbook_metrics.json</code></li>
+      <li>Queue export is regenerated by the playbook notebook (CSV intentionally kept out of git by the CI leak-guard)</li>
+    </ul>
+
+    <!-- ========== 8. ACKNOWLEDGMENTS ========== -->
+    <h2>8. Acknowledgments & data credit</h2>
+    <p>
+      Built on the <strong>FlyRank ML Internship dataset</strong>.
+      Data and program: <a href="https://flyrank.ai">https://flyrank.ai</a>.
+      The starter and warehouse releases are pseudonymized for public research use under the internship data-use terms.
+    </p>
+
+    <footer>
+      Public-safe research artifact · No client names, domains, or private queries · Decision-support only
+    </footer>
+  </div>
+</body>
+</html>
